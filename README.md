@@ -1,40 +1,125 @@
-# Soldered NAZIV PROIZVODA Component
+# Soldered Inputronic KEYBOARD ESP-IDF Component
 
-| ![Product name](https://upload.wikimedia.org/wikipedia/commons/8/8f/Example_image.svg) |
-| :------------------------------------------------------------------------------------: |
-|                      [NAZIV PROIZVODA](https://www.solde.red/SKU)                      |
+| ![Inputronic Keyboard - 80-Key I2C Keypad Breakout](https://soldered.com/cdn/shop/files/333360_featured-photo_ce5b18.png?v=1785315862&width=3840) |
+| :--------------------------------------------------------------------------------------------------------------------------------: |
+|                            [Inputronic Keyboard - 80-Key I2C Keypad Breakout](https://solde.red/333360)                             |
 
-OPIS PROIZVODA + LINK NA [Qwiic ecosystem](https://soldered.com/collections/qwiic-ecosystem).
+Inputronic KEYBOARD is a complete 80-key keypad breakout (8x10 tactile-switch matrix) built around Texas Instruments' TCA8418 I2C keyboard scanner. Rather than consuming 18 GPIO pins on a microcontroller, the chip handles scanning and debouncing independently and reports key press/release events over I2C (address 0x34) via a 10-event FIFO buffer. Two Qwiic connectors provide solder-free wiring. Part of the [Qwiic ecosystem](https://soldered.com/collections/qwiic-ecosystem).
 
-### Using the template
-
-Before publishing a new component make sure to replace:
-
-- `NAZIV PROIZVODA`, `OPIS PROIZVODA`, product image, SKU link, and the "Original source" line in this README
-- `version`, `description`, `url` in `idf_component.yml`
-- `components:` name and `namespace:` in `.github/workflows/upload_component.yml`
-- filenames in `src/` and `include/` plus matching `SRCS` and `INCLUDE_DIRS` in `CMakeLists.txt` and `#include` in the `.c` file
-- dependency key in `examples/.../idf_component.yml` (path stays `../../..`)
-- `@file`, `@brief`, `@param`, `@return` Doxygen comments in `include/*.h`, `src/*.c`, and `examples/basic/main/main.c` to describe the real API
-
-Also make sure to add examples.
-
-Run `./format.sh` before committing to auto-format `src/`, `include/`, and the example against the project's astyle rules (`.astyle_rules.yml`). CI runs the same check on every push/PR via `.github/workflows/format_check.yml` and fails on unformatted code.
-
-For uploading to Registry you need to register a trusted publisher under a component. To make the release to the registry you must bump `version` in `idf_component.yml` to `X.Y.Z`, push that commit, and confirm Format Check + Build Examples both pass on it (Actions tab) before tagging. Only once both are green: `git tag vX.Y.Z && git push origin vX.Y.Z`.
-
-**Remove this section of README after everything is done!**
+ESP-IDF component for the Inputronic KEYBOARD. It decodes every key press and release into a matrix position, a key label and the character it types, with SHIFT and caps lock handled, and has a blocking line input helper.
 
 ### Repository Contents
 
-- **/src** - source files (.c)
-- **/include** - header files (.h)
-- **/examples** - examples for using the library
+- **/src** - `soldered_inputronic_keyboard.c`, the driver and the default keymaps
+- **/include** - `soldered_inputronic_keyboard.h`, the public API
+- **/examples**
+  - `keyboard_poll` - logs row, column, label and character of every key press
+  - `serial_type` - echoes typing to the console like a terminal
+  - `string_input` - reads a line with `inputronic_keyboard_string_input()` and a timeout
 - **_other_** - idf_component.yml manifest file for ESP Component Registry
+
+### Usage
+
+Add the component to your project's `main/idf_component.yml`:
+
+```yaml
+dependencies:
+  solderedelectronics/soldered-inputronic-keyboard-esp-idf-component: "*"
+```
+
+The I2C bus belongs to the application so that other devices can share it. Create it first, then hand it to the driver:
+
+```c
+#include "soldered_inputronic_keyboard.h"
+
+i2c_master_bus_handle_t bus;
+i2c_master_bus_config_t bus_cfg = {
+    .i2c_port = I2C_NUM_0,
+    .sda_io_num = GPIO_NUM_8,
+    .scl_io_num = GPIO_NUM_9,
+    .clk_source = I2C_CLK_SRC_DEFAULT,
+    .flags.enable_internal_pullup = true,
+};
+ESP_ERROR_CHECK(i2c_new_master_bus(&bus_cfg, &bus));
+
+inputronic_keyboard_t kbd;
+inputronic_keyboard_config_t config = INPUTRONIC_KEYBOARD_CONFIG_DEFAULT(bus);
+ESP_ERROR_CHECK(inputronic_keyboard_init(&kbd, &config));
+
+while (1) {
+    inputronic_keyboard_event_t event;
+    while (inputronic_keyboard_read_event(&kbd, &event) == ESP_OK) {
+        if (event.pressed && event.character) {
+            printf("%c", event.character);
+        }
+    }
+    vTaskDelay(pdMS_TO_TICKS(20));
+}
+```
+
+The TCA8418 queues up to 10 events and drops anything past that, so read it often (every 20 ms is plenty) and drain it each time: `inputronic_keyboard_read_event()` returns `ESP_ERR_NOT_FOUND` once the FIFO is empty. The INT pin is not used.
+
+A keyboard handle is not thread safe, use it from one task or guard it with a mutex.
+
+### Keys, CAPS and SHIFT
+
+Every key has a label from the keymap, indexed `[row][col]`:
+
+| Row | Labels (col 0 to 9) |
+| :-: | :------------------ |
+| 0 | -, -, -, -, -, -, `UP`, `LEFT`, `DOWN`, `RIGHT` |
+| 1 | -, -, -, `BACK`, `ENTER`, `DEL`, `FN3`, `FN4`, `FN5`, `FN6` |
+| 2 | `F1` to `F10` |
+| 3 | `0` to `9` |
+| 4 | `P`, `Q`, `W`, `E`, `R`, `T`, `Y`, `U`, `I`, `O` |
+| 5 | `;`, `A`, `S`, `D`, `F`, `G`, `H`, `J`, `K`, `L` |
+| 6 | -, `Z`, `X`, `C`, `V`, `B`, `N`, `M`, `,`, `.` |
+| 7 | -, `ESC`, `TAB`, `CAPS`, `SHIFT`, `CTRL`, `ALT`, `FN1`, `FN2`, `SPACE` |
+
+Same behaviour as the Arduino library:
+
+- The keyboard starts with caps lock on (uppercase letters). Pressing `CAPS` toggles it, switching between `INPUTRONIC_KEYBOARD_KEYMAP_UPPER` and `INPUTRONIC_KEYBOARD_KEYMAP_LOWER`. `inputronic_keyboard_set_caps_lock()` sets it directly.
+- While `SHIFT` is held, letters invert their case and numbers and symbols go through the SHIFT table (`1` -> `!`, `2` -> `"`, ..., `7` -> `/`, `0` -> `=`, `;` -> `:`, `,` -> `;`, `.` -> `:`).
+- `event.character` holds what a press types, `' '` for `SPACE`, and `0` for keys that type nothing (`ENTER`, `SHIFT`, `F1`, ...). Check `event.label` for those.
+
+#### Custom layouts
+
+Point the config at your own tables to change the layout or the SHIFT table. Any field left `NULL` keeps the default, and the tables must outlive the keyboard handle:
+
+```c
+// US style SHIFT symbols
+static const inputronic_keyboard_shift_pair_t US_SHIFT[] = {
+    {'1', '!'}, {'2', '@'}, {'3', '#'}, {'4', '$'}, {'5', '%'},
+    {'6', '^'}, {'7', '&'}, {'8', '*'}, {'9', '('}, {'0', ')'},
+    {';', ':'}, {',', '<'}, {'.', '>'},
+};
+
+inputronic_keyboard_config_t config = INPUTRONIC_KEYBOARD_CONFIG_DEFAULT(bus);
+config.shift_map = US_SHIFT;
+config.shift_map_len = sizeof(US_SHIFT) / sizeof(US_SHIFT[0]);
+```
+
+Custom keymaps (`config.keymap_upper`, `config.keymap_lower`) are `inputronic_keyboard_keymap_t` tables. The driver finds `CAPS`, `SHIFT` and `SPACE` by label, so keep those labels on whichever keys should do that.
+
+### API
+
+| Function | Description |
+| :------- | :---------- |
+| `inputronic_keyboard_init()` / `_deinit()` | Add the keyboard to the bus and configure it / remove it. `ESP_ERR_NOT_FOUND` if nothing answers |
+| `inputronic_keyboard_read_event()` | Read and decode the oldest event, `ESP_ERR_NOT_FOUND` when the FIFO is empty |
+| `inputronic_keyboard_events_available()` | Number of events waiting, 0..10 |
+| `inputronic_keyboard_clear_events()` | Throw away every waiting event |
+| `inputronic_keyboard_string_input()` | Block until a line is typed and ENTER pressed, or a timeout runs out (`ESP_ERR_TIMEOUT`) |
+| `inputronic_keyboard_is_key_pressed()` / `_is_label_pressed()` | Whether a key is held, by position or by label |
+| `inputronic_keyboard_any_key_pressed()` / `_held_count()` | Whether any key is held / how many |
+| `inputronic_keyboard_get_last_key()` | Position and label of the last pressed key |
+| `inputronic_keyboard_get_label()` / `_find_key()` | Label at a position / position of a label, in the active keymap |
+| `inputronic_keyboard_label_to_char()` | What a single character label types right now, SHIFT applied |
+| `inputronic_keyboard_get_caps_lock()` / `_set_caps_lock()` | Read or set caps lock |
 
 ### Hardware design
 
-You can find hardware design for this board in _NAZIV PROIZVODA_ hardware repository.
+You can find hardware design for this board in the [Inputronic KEYBOARD hardware design](https://github.com/SolderedElectronics/Inputronic-KEYBOARD-hardware-design) repository.
 
 ### Documentation
 
@@ -52,7 +137,7 @@ At Soldered, we design and manufacture a wide selection of electronic products t
 
 ### Original source
 
-This library is possible thanks to original [arduino-mcp23017](https://github.com/blemasle/arduino-mcp23017) library. Thank you, blemasle.
+This is a port of the [Soldered Inputronic KEYBOARD Arduino library](https://github.com/SolderedElectronics/SOLDERED-Inputronic-KEYBOARD-Arduino-Library). Register setup, event decoding, keymaps and SHIFT handling follow it. The Arduino `typeOn()` helper is not ported: poll `inputronic_keyboard_read_event()` and act on `event.label` / `event.character` instead, as the `serial_type` example does.
 
 ### Open-source license
 

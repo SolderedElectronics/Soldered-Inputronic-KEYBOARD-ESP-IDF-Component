@@ -1,0 +1,3 @@
+dependencies:
+  Soldered-Inputronic-KEYBOARD-ESP-IDF-Component:
+    path: "../../.."
